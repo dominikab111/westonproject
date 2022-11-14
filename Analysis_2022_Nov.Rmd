@@ -1,0 +1,2177 @@
+---
+title: "Mid turbinate analysis"
+author: "Dominika Boron"
+date: "20/01/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+This is an analysis on nasal (mid turbinate) and oral samples collected between Fall 2020 - Spring 2021 - Fall 2021.
+Questions addressed in this analysis include:
+1. Are there any age related changes in the URT microbiome (alpha, beta diversity)? No.
+2. Do clusters exist within the microbiome between 2020-2021? Yes - 6.
+  a. Do people move clusters over the course of the season?   
+  b. Does their chance of moving cluster change if they had a respiratory event?
+3. Do specific ASVs correlate with any meta data? (i.e. age, sex, inflammatory conditions, anti inflammatory medications, vitamin D consumption, frailty scores, smoking, contact with children, antibiotics usage, streptococcus vaccination status, SEASONS)
+4. Are there microbiome features that are protective against URI events?
+  - dimension reduction (Aitchison's PCA)
+  - Only 12 events, 5 of which are 
+5. Bacterial load vs health conditions & other metadata
+
+
+```{r setup, include=FALSE}
+setwd("~/Documents/Archive_backup/mid_turbinates/may13_weston2")
+library(ggplot2)
+library(phyloseq)
+library(NbClust)
+library(ggtree)
+library(patchwork)
+library(vegan)
+library(tidyverse)
+library(microbiome)
+library(dplyr)
+library(RColorBrewer)
+library(ggpubr)
+library(ape)
+library(DESeq2)
+library(viridis)
+library(ANCOMBC)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+source('new_exploratory_graphics.R')
+
+citation(package = "DESeq2")
+```
+
+```{r Import}
+asvtab = 'seqtab_nochim_transposed_R2-WP2-June2022_v3.csv' 
+taxtab = 'taxa_R2-WP2-June2022_v3_silva138wsp.csv'
+# mapfile = 'may11_weston2_merged_v34_fulldatasets_2020_2021.csv'
+mapfile = '8 clusters - june 23 FSF.csv'
+
+#format tables
+asvdf = read.csv(asvtab, row.names = 1) 
+dim(asvdf) 
+#head(asvdf) 
+seqs = rownames(asvdf) #assign rownames to asv sequences #taking rownammes from asvdf and assigning it to seqs variable
+rownames(asvdf) = NULL 
+
+taxdf = read.csv(taxtab, row.names = 1) #read in taxonomic file and assign rownmaes to 1
+all(rownames(taxdf) == seqs) #make all rownames assigned to seqs #logical response test to ensure all rownames from taxdr match sequences
+rownames(taxdf) = NULL #assigns seqs to rownames...?
+
+mapdf = read.csv(mapfile, strip.white = TRUE, na.strings = '',
+                 stringsAsFactors = FALSE) #read in map file #na.strings indicates how the data is separated (with apostrophe's)
+#stringasFactors = logical response, FALSE meaning it character vectors should not be converted to factors
+#head(mapdf)
+dim(mapdf)
+#tail(mapdf)
+
+#create matrices from dataframes for phyloseq (required)
+rownames(mapdf) = mapdf$sample_id #using sampleIDs for rownames #allows plotting by samples
+asvtab = as.matrix(asvdf)
+taxtab = as.matrix(taxdf)
+
+#checks if the rownames in samdat match the colnames of asvtab. logical response
+# next line will print out the sample IDs that do not match
+
+all(rownames(mapdf) %in% colnames(asvdf)) #WP#'s that show up usually have a valid reason and means that the data won't be included in the phyloseq
+rownames(mapdf)[!(rownames(mapdf) %in% colnames(asvdf))]
+# 
+# #checks if the colnames in asvtab match the colnames of the sample file. logical response
+# #next line will print out the sample IDs that do not match
+# #An X as output indicates there is one column that does not match the samdat_clean
+# #it is an X because it is an unnamed column. we want to remove this column
+# #if you view(asvtab) you will see that you have sequences as the rownames and in the first column
+# #next step will be to remove the duplication. This may not be essential
+# 
+all(colnames(asvdf) %in% rownames(mapdf))
+colnames(asvdf)[!(colnames(asvdf) %in% rownames(mapdf))] #fix WP2.188, X714nestedneg, X792nestedneg, WP2.23
+
+#import to phyloseq
+dat = phyloseq(otu_table(asvtab, taxa_are_rows = TRUE),
+               tax_table(taxtab),
+               sample_data(mapdf)) #requires all 3 things listed above
+
+dat #reading the phyloseq object; make sure you get the taxa you are supposed to #288 samples
+length(seqs) #getting the length of sequences
+names(seqs) = taxa_names(dat) #assigning taxa names to sequences
+#write.csv(seqs, "asv_sequences_midturb.csv")
+```
+
+```{r Clean}
+#cleaning the data of non-bacteria taxa (i.e. removing host) starting with: 15674 taxa
+dat1 = subset_taxa(dat, Kingdom %in% c("Bacteria", "Archaea")) #15665 taxa #only includes bacteria AND ARCHAEA
+dat_lessHOST = subset_taxa(dat, Order!="Chloroplast") #15293 taxa
+dat_lessCONTAM = subset_taxa(dat_lessHOST, Genus!= "Bacillus") #12703 taxa
+dat_lessCONTAM1 = subset_taxa(dat_lessCONTAM, Genus!= "Halomonas") #12666 taxa 
+dat_lessCONTAM2 = subset_taxa(dat_lessCONTAM1, Genus!= "Escherichia-Shigella") #12656 taxa 
+dat_lessCONTAM3 = subset_taxa(dat_lessCONTAM2, Genus!= "Janthinobacterium") #12630 taxa 
+dat_lessCONTAM4 = subset_taxa(dat_lessCONTAM3, Genus!= "Gordonia") #12578 ASVs 
+dat_lessCONTAM5 = subset_taxa(dat_lessCONTAM4, Genus!= "Methylobacterium-Methylorubrum") #12511 taxa
+dat_lessCONTAM6 = subset_taxa(dat_lessCONTAM5, Genus!= "UBA1819") #12193 taxa
+dat_lessCONTAM7 = subset_taxa(dat_lessCONTAM6, Genus!= "Hungatella")
+dat_lessCONTAM8 = subset_taxa(dat_lessCONTAM7, Genus!= "Bacteroides")
+cleaned_dat = subset_taxa(dat_lessCONTAM8, Family!="Mitochondria") #12193 ASVs 
+cleaned_dat  #dat_v3: 7032 taxa, 397 samples, oral v3: 145 samples, 7032 taxa
+
+dat_rel <- transform_sample_counts(cleaned_dat, function(x) x/sum(x)) #calculate relative abundance
+dat_rel
+
+keep = taxa_sums(cleaned_dat)/nsamples(cleaned_dat) > 10 #keep taxa with mean abundances greater than 10
+#str(dat)
+sum(keep)
+
+# dat_filt = prune_taxa(dat, dat_nas)
+dat_filt = prune_taxa(keep, cleaned_dat) #pruning down to exact same taxa
+dat_filt #266 taxa
+dat_filt = prop_tax_down(dat_filt, indic = FALSE) 
+dat_filt #use with rarefying, 575 samples
+samplesums = sort(sample_sums(cleaned_dat))
+samplesums
+
+sum(sample_sums(dat_filt) < 2500)
+
+#sample_data(dat_filt)[sample_sums(dat_filt) < 2500,]
+
+#Separate out the nasal and oral samples
+dat_nas = (cleaned_dat 
+           # %>% subset_samples(omit != 'yes')
+           %>% subset_samples(sampling_time != 'Event'))
+           # %>% filter_taxa(function(x) sum(x)/length(x) > 10, prune = TRUE))
+dat_nas
+
+#august 10th, 2022 - filter out only fall 2020 and fall 2021 samples
+dat_fall = (cleaned_dat
+            %>% subset_samples(sampling_season != 'Winter_21')
+            %>% subset_samples(sampling_season != 'Spring_21')
+            %>% subset_samples(sampling_season != 'Summer_21'))
+
+dat_fall_rel <- transform_sample_counts(dat_fall, function(x) x/sum(x))
+
+dat_nas_20 = (cleaned_dat 
+           %>% subset_samples(sample_type != 'Control_mt')
+           %>% subset_samples(sample_type != 'strep + UTM')
+           %>% subset_samples(sample_type != 'Strep + UTM+swab')
+           %>% subset_samples(sample_type != 'Salivette')
+           %>% subset_samples(sampling_season != 'Fall_21')
+           %>% subset_samples(sampling_time != 'Event')
+           %>% subset_samples(sampling_season != "Spring_21"))
+           # %>% filter_taxa(function(x) sum(x)/length(x) > 2, prune = TRUE))
+dat_nas_20 #297 samples, 7032 taxa
+
+dat_oral = (cleaned_dat 
+            %>% subset_samples(sample_type != 'Control_mt')
+            %>% subset_samples(sample_type != 'strep + UTM')
+            %>% subset_samples(sample_type != 'Strep + UTM+swab')
+            %>% subset_samples(sample_type != 'Nasal_mt'))
+            # %>% filter_taxa(function(x) sum(x)/length(x) > 10, prune = TRUE))
+dat_oral #145 samples, 129 taxa
+
+nas_sums = sort(sample_sums(dat_nas))
+nas_sums
+
+nas_sums_21 = sort(sample_sums(dat_nas_21))
+nas_sums_21
+
+oral_sums = sort(sample_sums(oral_v3))
+oral_sums
+
+dat_nas = cleaned_dat
+dat_nas
+
+#filtering out samples with reads lower than 3500; arbitrary cutoff, but filtering is required.
+dat_nas = prune_samples(sample_sums(cleaned_dat) > 4000, cleaned_dat)
+dat_nas #lost 7 samples- fall 2020, spring 2021, fall 2021, filtering host + prune at 4000 read depth -> 390 #event analysis: lost 9 samples, 7032 taxa, 442 samples
+
+dat_nas = (dat_nas 
+            %>% subset_samples(sampling_time != 'ILI'))
+
+dat_nas_20 = prune_samples(sample_sums(dat_nas_20) > 4000, dat_nas_20)
+dat_nas_20 #lost 9 samples
+
+dat_nas_21_t = prune_samples(sample_sums(dat_nas_21_t) > 4000, dat_nas_21_t)
+dat_nas_21 
+
+dat_oral = prune_samples(sample_sums(oral_v3) > 3500, oral_v3)
+dat_oral #lost 0 samples
+
+dat_nas_rel = prune_samples(sample_names(dat_rel) %in% sample_names(dat_nas),
+                            dat_rel)
+dat_nas_rel = prune_taxa(taxa_names(dat_rel) %in% taxa_names(dat_nas),
+                         dat_nas_rel)
+
+dat_nas_20_rel = prune_samples(sample_names(dat_rel) %in% sample_names(dat_nas_20),
+                                   dat_rel)
+dat_nas_20_rel = prune_taxa(taxa_names(dat_rel) %in% taxa_names(dat_nas_20),
+                                   dat_nas_20_rel)
+
+dat_nas_21_t_rel = prune_samples(sample_names(dat_rel) %in% sample_names(dat_nas_21_t),
+                                   dat_rel)
+dat_nas_21_t_rel = prune_taxa(taxa_names(dat_rel) %in% taxa_names(dat_nas_21_t),
+                                   dat_nas_21_t_rel)
+
+dat_oral_rel = prune_samples(sample_names(dat_rel) %in% sample_names(dat_oral),
+                             dat_rel)
+dat_oral_rel = prune_taxa(taxa_names(dat_rel) %in% taxa_names(dat_oral),
+                          dat_oral_rel)
+```
+
+```{r Further subsetting}
+'Baseline & Follow Up'
+dat_nas_noevent = (dat_nas
+                   %>% subset_samples(sampling_time != 'Event'))
+dat_nas_noevent #253 taxa, 364 samples
+
+dat_nas_noevent_rel = (dat_nas_rel
+                       %>% subset_samples(sampling_time != 'Event'))
+dat_nas_noevent_rel #253 taxa, 364 samples
+
+'Baseline'
+dat_nas_base = (dat_nas
+                %>% subset_samples(sampling_time != 'Event')
+                %>% subset_samples(sampling_time != 'FollowUp'))
+dat_nas_base
+
+dat_nas_base_rel = (dat_nas_rel
+                    %>% subset_samples(sampling_time != 'Event')
+                    %>% subset_samples(sampling_time != 'FollowUp'))
+dat_nas_base_rel
+
+'FollowUp'
+dat_nas_follow = (dat_nas
+                  %>% subset_samples(sampling_time!= 'Event')
+                  %>% subset_samples(sampling_time!= 'Baseline'))
+dat_nas_follow
+
+dat_nas_follow_rel = (dat_nas_rel
+                      %>% subset_samples(sampling_time!= 'Event')
+                      %>% subset_samples(sampling_time!= 'Baseline'))
+dat_nas_follow_rel  
+
+'Event'
+dat_nas_eve = (dat_nas
+               %>% subset_samples(sampling_time == 'Event'))
+dat_nas_eve
+
+dat_nas_eve_rel = (dat_nas_rel
+                   %>% subset_samples(sampling_time == 'Event'))
+dat_nas_eve_rel
+
+'Uninfected individuals'
+dat_nas_uninfected = (dat_nas_base
+                      %>% subset_samples(infected_2020 == 'No'))
+dat_nas_uninfected #158 individuals
+
+dat_nas_infected = (dat_nas_base
+                    %>% subset_samples(infected_2020 != 'No'))
+dat_nas_infected #10 samples
+
+'baseline & event'
+dat_nas = (dat_nas
+           %>% subset_samples(sample_type == 'Nasal_mt')
+           %>% subset_samples(sampling_time != 'Followup')
+           %>% subset_samples(sampling_time != 'Follow Up'))
+dat_nas
+
+dat_nas_rel = (dat_nas_rel
+               %>% subset_samples(sample_type == 'Nasal_mt')
+              %>% subset_samples(sampling_time != 'Followup')
+              %>% subset_samples(sampling_time != 'Follow Up'))
+dat_nas_rel
+```
+
+#What is the abundance of lytA gene in samples? How does it relate to the amount of S. pneumoniae in samples?
+```{r Plot}
+plot_copy <- ggplot(data = dat_melt, aes(x = StudyID, y = lytA_copy_number_avg)) +
+  geom_point(alpha = 0.85) +
+  xlab ("Participant ID's") + 
+  ylab ("The number of lytA copies") + 
+  ggtitle("The number of lytA copies in mid turbinate samples") + 
+  theme(axis.text.x = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+plot_copy
+svg("FIGURES/copies_strep.svg", width = 15)
+plot_copy
+dev.off()
+
+plot_log <- ggplot(data = dat_melt, aes(x = StudyID, y = lytA_geo_avg)) +
+      geom_point(alpha = 0.85) +
+      xlab("Participant ID's") +
+      ylab("The # of lytA copies (Log)") +
+      ggtitle("The number of lytA copies in mid turbinate samples (log)") +
+      theme(axis.text.x = element_blank()) +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      panel.background = element_blank(), axis.line = element_line(colour = "black"))
+plot_log
+svg("FIGURES/log_strep.svg", width = 15)
+plot_log
+dev.off()
+
+plot_s <- ggplot(data = dat_strep, aes(x = Abundance, y = lytA_copy_number_avg)) +
+  geom_point(alpha = 0.85) +
+  xlab("Streptococcus Relative Abundance") +
+  ylab("The number of lytA copies") +
+  facet_wrap(~ OTU) +
+  ggtitle("LytA gene amplification vs Streptococcus abundance (OTUs) in mid turbinate samples") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      panel.background = element_blank(), axis.line = element_line(colour = "black")) 
+plot_s
+svg("FIGURES/strep_lytA_OTUs.svg", width = 15)
+plot_s
+dev.off()
+
+dat_strep1 <- dat_strep %>%
+            select(StudyID, Abundance) %>%
+            group_by(StudyID) %>%
+            summarize(meanAb = mean(Abundance)) %>%
+            mutate(strep_pos = ifelse(meanAb != 0, "pos", "neg"))
+str(dat_strep1)
+
+dat_strep2 <- dat_strep %>% 
+  select(cq_lytA, StudyID, Abundance, qpcr_plate)%>%
+  group_by(StudyID)%>% 
+  mutate(cq_lytA = as.numeric(cq_lytA))%>%
+  summarize(meanAb = mean(Abundance), cq_lytA = mean(cq_lytA), qpcr_plate = mean(qpcr_plate))%>%
+  mutate(strep_pos = ifelse(meanAb != 0, "pos", "neg"))
+  
+dat_strep2 %>%
+  filter(cq_lytA > 0)%>%
+  ggplot(aes(x=strep_pos, y=cq_lytA))+
+  geom_boxplot()+
+  geom_jitter()+
+  facet_wrap(~qpcr_plate)
+
+str(dat_strep)
+```
+  
+## Does alpha diversity increase/decrease with age, sex, # of inflammatory conditions or anti inflammatory medications, and sample site?
+```{r Alpha Base Prep}
+cleaned_dat = dat
+dat = (dat %>% subset_samples(cluster != "8"))
+nas = data.frame(sample_data(dat))
+nas = data.frame(sample_data(dat_nas_rare))
+samdat_nas = data.frame(sample_data(dat_nas))
+samdat_nas_oral = data.frame(sample_data(oral_v3))
+
+'RAREFY BEFORE CALCULATING ALPHA DIVERSITY METRICS'
+set.seed(4)
+# dat_nas28 = rarefy_even_depth(dat)
+
+dat_nas_rare = rarefy_even_depth(dat_nas)
+dat_nas_follow_rare = rarefy_even_depth(dat_nas_follow)
+dat_nas_noevent_rare = rarefy_even_depth(dat_nas_noevent)
+dat_nas_21_rare = rarefy_even_depth(dat_nas_21)
+dat_oral_rare = rarefy_even_depth(oral_v3)
+
+# alpha = estimate_richness(dat_nas28, measures = c("Shannon", "Observed", "Simpson"))
+# nas_data28 <- cbind(nas, alpha)
+# write.csv(nas_data28, "8 clusters_june28_alphameasurements.csv")
+
+'Nasal'
+alpha_nas = estimate_richness(dat_nas_rare, measures = c("Shannon", "Observed", "Simpson"))
+nas_data <- cbind(sample_data(dat_nas_rare), alpha_nas)
+#head(nas_data)
+nas_data$age = as.numeric(nas_data$age)
+nas_data28$bac_load_log = as.numeric(nas_data28$bac_load_log)
+nas$bac_load_log = as.numeric(nas$bac_load_log)
+nas$X16S_copies = as.numeric(nas$X16S_copies)
+nas_df_b <- nas_df_b %>% filter(ILI != 'NA')
+nas_data_df <- nas_data %>% filter(season != 'Winter')
+#alpha_nas = (data.frame(NAME = rownames(alpha_nas), Shannon = alpha_nas)
+			 #%>% left_join((samdat_nas
+			 	#		   %>% filter(Timepoint == 'Baseline')),
+			 	#		  by = 'NAME'))
+samdat_oral = data.frame(sample_data(dat_oral))
+
+'Oral'
+set.seed(5)
+dat_oral_rare = rarefy_even_depth(dat_oral)
+alpha_oral = estimate_richness(oral_v3, measures = c("Shannon", "Observed", "Simpson"))
+oral_data <- cbind(sample_data(oral_v3), alpha_oral)
+#head(oral_data)
+oral_data$age = as.numeric(oral_data$age) #change structure to numeric
+oral_data$bac_load_log = as.numeric(oral_data$bac_load_log)
+
+'Nasal and oral'
+alpha_nasoral = estimate_richness(dat_nas_oral_rare, measures = c("Shannon", "Observed", "Simpson"))
+nasoral_data <- cbind(sample_data(dat_nas_oral_rare), alpha_nasoral)
+head(nasoral_data)
+str(nasoral_data)
+nasoral_data$geo_avg = as.numeric(nasoral_data$geo_avg)
+```
+
+#Model vs. meds in people 50 and over, model vs. meds in everyone, with each alpha diversity measurement.
+```{r Alpha Diversity Models}
+# 'Diversity metrics versus nasal mb, 50+ in age'
+# shan_nas_med = lm(Shannon ~ sex + age + antiinflam_meds + geo_avg, data = filter(nas_data, age >= 50))
+# summary(shan_nas_med)
+# 
+# simp_nas_med = lm(Simpson ~ sex + age + antiinflam_meds + geo_avg, data = filter(nas_data, age >= 50))
+# summary(simp_nas_med)
+# 
+# obs_nas_med = lm(Observed ~ sex + age + antiinflam_meds + geo_avg, data = filter(nas_data, age >= 50))
+# summary(obs_nas_med)
+
+'NEW STATS: June 8th, Linear model testing for variables I am interested in + controlling for random effect with Participant ID'
+'NASAL'
+# anova.shann <- lmer(Shannon ~ age + sex + meds.1 + bac_load_log + INFLAM.CONDITIONS + (1|BW_ID), nas_data)
+# anova(anova.shann)
+
+anova.bl <- lmer(bac_load_log ~ sampling_season + (1|participant_id), nas)
+anova(anova.bl)
+
+f <- emmeans(anova.bl, pairwise ~ sampling_season)
+f
+
+anova.s <- lmer(Observed ~ dom_genus + (1|participant_id), nas_data28)
+s <- anova(anova.s)
+
+f <- emmeans(anova.s, pairwise ~ dom_genus)
+f
+
+anova.shann <- lmer(Shannon ~ age + sex + meds.1 + bac_load_log + VITAMIND + strep_vaccination + children_contact + INFLAM.CONDITIONS + season + smoking + prefrailty.score + ILI + (1|BW_ID), nas_data_df)
+a <- anova(anova.shann)
+write.csv(a, "results_mt_alpha_shannon_june21.csv")
+
+p.adjust(p, method = "BH")
+emmeans(anova.shann, pairwise ~ seasons)
+
+anova.simp <- lmer(Simpson ~ age + sex+meds.1 + bac_load_log + VITAMIND + strep_vaccination + children_contact + INFLAM.CONDITIONS + season +smoking + frailty + overall_infected + (1|BW_ID), nas_data)
+as <- anova(anova.simp)
+write.csv(as, "results_mt_alpha_simpson_june21.csv")
+
+emmeans(anova.simp, pairwise ~ season)$contrasts
+
+anova.obs <- lmer(Observed ~ age + sex + meds.1 + bac_load_log + VITAMIND + strep_vaccination + children_contact + INFLAM.CONDITIONS + season + smoking + frailty + overall_infected + (1|BW_ID), nas_data)
+ao <- anova(anova.obs)
+write.csv(ao, "results_mt_alpha_obs_june21.csv")
+
+'Plot 1a. Alpha diversity does not have an affect on the nasal microbiota with age (50+), sex and medication usage.'
+#relevel the seasons in the order you would like (F, W, Sp, Su) first
+nas_data$season <- factor(nas_data$season, levels = c("Fall", "Spring", "Summer")) #re-ordering the seasons in the dataframe to be chronological
+nas_data$meds.1 <- factor(nas_data$meds.1, levels = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11","12", "16", "17"))
+nas_data$VITAMIND <- factor(nas_data$VITAMIND, levels = c("Y", "N"))
+nas_data$strep_vaccination <- factor(nas_data$strep_vaccination, levels = c("Y", "N", "Unknown"))
+nas_data$children_contact <- factor(nas_data$children_contact, levels = c("Y", "N"))
+nas_data$smoking <- factor(nas_data$smoking, levels = c("Y", "N"))
+
+p_bl <- ggplot(data = nas_data, aes(x = bac_load_log, y = Shannon)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = 'lm', colour = 'black') +
+  #geom_jitter(position = position_jitterdodge(dodge.width = 0.75, jitter.width = 0.25)) + 
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Bacterial load (16S rRNA copies (log))") + 
+  ylab ("Shannon Index") + 
+  ggtitle("Alpha diversity are correlated with a decreasing bacterial load") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+p_bl + scale_color_brewer(palette = "Set2")
+svg("FIGS/observed_asvs_bacterialload.svg", width = 10)
+p_bl
+dev.off()
+
+p_nas <- ggplot(data = nas_data, aes(x = age, y = Shannon)) +
+  geom_point(aes(colour = sex), alpha = 0.85) +
+  geom_smooth(method = 'lm', aes(colour = sex)) +
+  #geom_jitter(position = position_jitterdodge(dodge.width = 0.75, jitter.width = 0.25)) + 
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Age") + 
+  ylab ("Shannon Index") + 
+  ggtitle("Alpha diversity are neither correlated with age or sex") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+p_nas + scale_color_brewer(palette = "Set2")
+svg("FIGS/shannon_age_sex.svg", width = 10)
+p_nas
+dev.off()
+
+p <- ggplot(data = nas_data, aes(x = smoking, y = Shannon)) +
+  geom_boxplot(fill = NA, outlier.colour = NA) +
+  geom_jitter(aes(colour = smoking), alpha = 0.85, width = 0.2) +
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Smoking status") + 
+  ylab ("Shannon Index") + 
+  ggtitle("Shannon Index does not correlate with smoking status") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+p + scale_color_brewer(palette = "Set2")
+svg("Figs/shannon_smoking.svg", width = 10)
+p
+dev.off()
+
+nas_data$hc.labels <- factor(nas_data$hc.labels, levels = c("1", "2", "3", "4",
+                                                         "5", "6", "7", "8"))
+
+nas_data28$dom_genus <- factor(nas_data28$dom_genus, levels = c("Coryne1", "Coryne2", "Coryne3", "Coryne4", "Staph1", "Staph2", "Mixed")) #re-ordering the seasons in the dataframe to be chronological
+nas_data28$bac_load_log = as.numeric(nas_data28$bac_load_log)
+
+ps <- ggplot(nas_data28, aes(x = dom_genus, y = Observed)) +
+  geom_boxplot(aes(group = dom_genus), fill = NA, outlier.alpha = NULL, outlier.shape = NA) +
+  geom_jitter(aes(colour = dom_genus), alpha = 0.6, width = 0.2) +
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Cluster") + 
+  ylab ("Observed ASVs") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  scale_colour_manual(values = c("Coryne2" = "#ff7518",#coryne2
+                        "Staph2" = "#9c70db", #staph2
+                        "Mixed" = "#005d9d", #mixed
+                        "Coryne3" = "#cc7000", #coryne3
+                        "Staph1" = "#800080", #dark purple; staph 1
+                        "Coryne1" = "#f99552", #coryne1
+                        "Coryne4" = "#db7461"))
+ps
+svg("FIGS/observed clusters_7_june28.svg", width = 10)
+ps
+dev.off()
+
+nas <- nas %>% filter(sampling_season != 'Winter_21')
+nas$sampling_season <- as.factor(nas$sampling_season)
+
+p <- ggplot(nas, aes(x = sampling_season, y = bac_load_log)) +
+  geom_boxplot(aes(group = sampling_season), fill = NA, outlier.alpha = NULL, outlier.shape = NA) +
+  geom_jitter(aes(colour = sampling_season), alpha = 0.7) +
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Sampling season") + 
+  ylab ("Bacterial load (16S rRNA copies)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  scale_colour_brewer(palette = "Set2")
+p
+svg("FIGS/seasons_bacterial_load.svg", width = 10)
+p
+dev.off()
+```
+
+```{r alpha oral}
+'NEW STATS: June 8th, Linear model testing for variables I am interested in' 
+'Note: I do not need to control for Participant ID (BW_ID) with a random effect because there isnt more than 1 participant per sample'
+'ORAL'
+# anova.shann <- lmer(Shannon ~ age + sex + meds.1 + bac_load_log + INFLAM.CONDITIONS + (1|BW_ID), nas_data)
+# anova(anova.shann)
+
+anova.shann <- lm(Shannon ~ age + sex+meds.1 + bac_load_log + VITAMIND + strep_vaccination + children_contact + INFLAM.CONDITIONS + season + smoking + frailty + overall_infected, oral_data)
+a <- anova(anova.shann)
+write.csv(a, "results_alpha_shannon_ORAL_ns_june16.csv")
+
+emmeans(anova.shann, pairwise ~ overall_infected)
+
+anova.simp <- lm(Simpson ~ age + sex+meds.1 + bac_load_log + VITAMIND + strep_vaccination + children_contact + INFLAM.CONDITIONS + season +smoking + frailty + overall_infected, oral_data)
+as <- anova(anova.simp)
+write.csv(as, "results_alpha_simpson_ORAL_ns_june16.csv")
+
+emmeans(anova.simp, pairwise ~ season)$contrasts
+
+anova.obs <- lm(Observed ~ age + sex + meds.1 + bac_load_log + VITAMIND + strep_vaccination + children_contact + INFLAM.CONDITIONS + season + smoking + frailty + overall_infected, oral_data)
+ao <- anova(anova.obs)
+write.csv(ao, "results_alpha_obs_ORAL_ns_june15.csv")
+
+emmeans(anova.obs, pairwise ~ season)$contrasts
+
+'Plot 1a. Alpha diversity does not have an affect on the nasal microbiota with age (50+), sex and medication usage.'
+#relevel the seasons in the order you would like (F, W, Sp, Su) first
+nas_data$season <- factor(nas_data$season, levels = c("Fall", "Spring", "Summer")) #re-ordering the seasons in the dataframe to be chronological
+nas_data$meds.1 <- factor(nas_data$meds.1, levels = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11","12", "16", "17"))
+nas_data$VITAMIND <- factor(nas_data$VITAMIND, levels = c("Y", "N"))
+nas_data$strep_vaccination <- factor(nas_data$strep_vaccination, levels = c("Y", "N", "Unknown"))
+nas_data$children_contact <- factor(nas_data$children_contact, levels = c("Y", "N"))
+nas_data$smoking <- factor(nas_data$smoking, levels = c("Y", "N"))
+
+p_bl <- ggplot(data = nas_data, aes(x = bac_load_log, y = Observed)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = 'lm', colour = 'black') +
+  #geom_jitter(position = position_jitterdodge(dodge.width = 0.75, jitter.width = 0.25)) + 
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Bacterial load (16S rRNA copies (log))") + 
+  ylab ("Observed ASVs") + 
+  ggtitle("Alpha diversity are correlated with a decreasing bacterial load") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+p_bl + scale_color_brewer(palette = "Set2")
+svg("FIGS/observed_asvs_bacterialload.svg", width = 10)
+p_bl
+dev.off()
+
+p_nas <- ggplot(data = nas_data, aes(x = age, y = Shannon)) +
+  geom_point(aes(colour = sex), alpha = 0.85) +
+  geom_smooth(method = 'lm', aes(colour = sex)) +
+  #geom_jitter(position = position_jitterdodge(dodge.width = 0.75, jitter.width = 0.25)) + 
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Age") + 
+  ylab ("Shannon Index") + 
+  ggtitle("Alpha diversity are neither correlated with age or sex") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+p_nas + scale_color_brewer(palette = "Set2")
+svg("FIGS/shannon_age_sex.svg", width = 10)
+p_nas
+dev.off()
+
+p <- ggplot(data = nas_data, aes(x = smoking, y = Shannon)) +
+  geom_boxplot(fill = NA, outlier.colour = NA) +
+  geom_jitter(aes(colour = smoking), alpha = 0.85, width = 0.2) +
+  #geom_boxplot(aes(color = sex1), fill = NA) +
+  xlab ("Smoking status") + 
+  ylab ("Shannon Index") + 
+  ggtitle("Shannon Index does not correlate with smoking status") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+p + scale_color_brewer(palette = "Set2")
+svg("Figs/shannon_smoking.svg", width = 10)
+p
+dev.off()
+```
+
+```{r ordination oral}
+d <- ordinate(dat_rel, method = "MDS", distance = "bray")
+
+matrix = phyloseq:::scores.pcoa(d, display="sites")
+
+'seasons'
+bray_seasons <- plot_ordination(dat_rel, d)  +
+  geom_point(aes(colour = strep_vaccination), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_brewer(palette = "Set2") +
+  ggtitle("Microbial composition of individuals Streptococcus vaccination status") +
+  stat_ellipse(aes(colour = strep_vaccination), linetype = 2)
+bray_seasons
+svg("FIGS/strep_pcoa.svg", width = 10)
+bray_seasons
+dev.off()
+
+otu <- otu_table(dat_nas_rel)
+dist1 <- phyloseq::distance(otu, method = "bray")
+meta <- meta(dat_nas_rel)
+
+
+oral_data$strep_vaccination <- factor(oral_data$strep_vaccination, levels = c("Y", "N"))
+
+perm_strep <- adonis2(dist1 ~ strep_vaccination,
+                     data = meta, permutation = 999, method = "bray")
+perm_strep
+```
+
+```{r Ordination nasal}
+'USE RELATIVIZED (or rarefied) PHYLOSEQ OBJECT FOR ORDINATION'
+d <- ordinate(dat_rel, method = "MDS", distance = "bray")
+matrix = phyloseq:::scores.pcoa(d, display="sites")
+
+df <- ordinate(dat_fall_rel, method = "MDS", distance = "bray")
+
+dbf <- ordinate(dat_nas_rel, method = "MDS", distance = "bray")
+db <- ordinate(dat_nas_20_rel, method = "MDS", distance = "bray")
+
+map20 <- sample_data(dat_nas_20_rel)
+# d21 <- ordinate(dat_nas_21_rel, method = "MDS", distance = "bray")
+# d <- ordinate(dat_nas_base_rel, method = "MDS", distance = "bray")
+# df <- ordinate(dat_nas_follow_rel, method = "MDS", distance = "bray")
+# do <- ordinate(dat_oral_rel, method = "MDS", distance = "bray")
+
+'seasons'
+bray_seasons <- plot_ordination(dat_rel, d)  +
+  geom_point(aes(colour = sampling_season), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_brewer(palette = "Set2") +
+  ggtitle("Microbial composition of individuals at different seasons") +
+  stat_ellipse(aes(colour = sampling_season), linetype = 2)
+bray_seasons
+svg("FIGS/sampling_seasons_pcoa.svg", width = 10)
+bray_seasons
+dev.off()
+
+otu <- otu_table(dat_rel)
+dist1 <- phyloseq::distance(otu, method = "bray")
+m <- meta(dat_rel)
+
+perm <- adonis2(dist1 ~ sampling_time,
+            data = m, permutations = 999, method = "bray")
+perm
+
+dat_nas_20 = (dat_rel 
+              %>% subset_samples(sampling_season == 'Fall_20'))
+db <- ordinate(dat_nas_20, method = "MDS", distance = "bray")
+
+otu <- otu_table(dat_rel)
+otu <- abundances(otu)
+meta <- meta(dat_rel)
+
+otu1 <- otu_table(dat_nas_20)
+dist <- phyloseq::distance(otu1, method = "bray")
+mf <- meta(dat_nas_20)
+mf$bac_load_log = as.numeric(mf$bac_load_log)
+
+dat_nas_20 = phyloseq(otu_table(asvtab, taxa_are_rows = TRUE),
+               tax_table(taxtab),
+               sample_data(mf))
+
+perm_age <- adonis2(dist ~ age,
+            data = mf, permutations = 999, method = "bray")
+perm_age
+
+p_bac <- adonis2(dist ~ overall_infected,
+            data = mf, permutations = 999, method = "bray")
+p_bac
+
+perm_sea <- adonis2(dist ~ sampling_season,
+            data = meta, permutations = 999, method = "bray")
+perm_sea
+
+'Fall 2020-2021 seasons'
+otu1 <- otu_table(dat_fall_rel)
+dist <- phyloseq::distance(otu1, method = "bray")
+mf <- meta(dat_fall_rel)
+
+perm_season <- adonis2(dist ~ sampling_season,
+            data = mf, permutations = 999, method = "bray")
+perm_season
+
+bray_fall <- plot_ordination(dat_fall_rel, df)  +
+  geom_point(aes(colour = sampling_season), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_brewer(palette = "Set2") +
+  ggtitle("Microbial composition of individuals at different seasons") +
+  stat_ellipse(aes(colour = sampling_season), linetype = 2)
+bray_fall
+svg("FIGS/seasons_pcoa.svg", width = 10)
+bray_fall
+dev.off()
+
+'bacterial load'
+bray_bac <- plot_ordination(dat_nas_20, db) +
+  geom_point(aes(colour = bac_load_log), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_gradient(low = "blue", high = "red")
+bray_bac
+svg("FIGS/pcoa_bacterial_load_gradient.svg", width = 10)
+bray_bac
+dev.off()
+
+'overall influenza - like infection'
+bray_infected <- plot_ordination(dat_nas_20_rel, db)  +
+  geom_point(aes(colour = overall_infected), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_brewer(palette = "Set2") +
+  ggtitle("Microbial composition of infected vs uninfected individuals") +
+  stat_ellipse(aes(colour = infected_2020), linetype = 2)
+bray_infected
+
+'Infected vs uninfected individuals 2021'
+bray_infected_2021 <- plot_ordination(dat_nas_base_rel, d)  +
+  geom_point(aes(colour = infected_2021), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#FFB6C1", "#008080")) +
+  ggtitle("Microbial composition of infected vs uninfected individuals") 
+plot(bray_infected_2021)
+svg("FIGURES/predicting_infection_2021.svg", width = 10)
+bray_infected_2021
+dev.off()
+
+bray_infected_2021_2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4)  +
+  geom_point(aes(color = infected_2021), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#FFB6C1", "#008080")) +
+  ggtitle("Microbial composition of infected vs uninfected individuals") 
+plot(bray_infected_2021_2)
+svg("FIGURES/predicting_infection_2021_axis2.svg")
+bray_infected_2021_2
+dev.off()
+
+perm_infected <- adonis2(dist1 ~ infected_2021,
+            data = meta, permutations = 999, method = "bray")
+perm_infected
+
+'Age'
+bray_age <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = age_cat), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by age") 
+plot(bray_age)
+
+bray_age2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = age_cat), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by age") 
+plot(bray_age)
+
+perm_age <- adonis2(dist1 ~ age_cat,
+                   data = meta, permutations = 999, method = "bray")
+perm_age
+
+'Sex'
+bray_sex <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = sex), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060")) +
+  ggtitle("Microbial composition coloured by sex")
+bray_sex
+
+bray_sex2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = sex), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060")) +
+  ggtitle("Microbial composition coloured by sex")
+bray_sex2
+
+perm_sex <- adonis2(dist1 ~ sex,
+                   data = meta, permutations = 999, method = "bray")
+perm_sex
+
+'Inflammatory conditions'
+bray_inflam <- plot_ordination(dat_nas_base_rel, d) +
+   geom_point(aes(colour = INFLAM.CONDITIONS), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by inflammatory conditions")
+bray_inflam
+
+bray_inflam2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+   geom_point(aes(colour = INFLAM.CONDITIONS), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by inflammatory conditions")
+bray_inflam2
+
+perm_inflam <- adonis2(dist1 ~ INFLAM.CONDITIONS,
+                   data = meta, permutations = 999, method = "bray")
+perm_inflam
+
+'Medications'
+bray_meds <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = meds), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by # of medications")
+bray_meds
+
+bray_meds2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = meds), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by # of medications")
+bray_meds2
+
+perm_meds <- adonis2(dist1 ~ meds,
+                    data = meta, permutations = 999, method = "bray")
+perm_meds
+
+'Antiinflammatory medications'
+bray_antiinflam <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = antiinflam_meds), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369", "#69b3a2", "purple", "black")) +
+  ggtitle("Microbial composition coloured by # of anti inflammatory medications")
+bray_antiinflam
+
+bray_antiinflam2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) + 
+  geom_point(aes(colour = antiinflam_meds), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369", "#69b3a2", "purple", "black")) +
+  ggtitle("Microbial composition coloured by # of anti inflammatory medications")
+bray_antiinflam2
+
+perm_antiinflam <- adonis2(dist1 ~ antiinflam_meds,
+                    data = meta, permutations = 999, method = "bray")
+perm_antiinflam
+
+'Smoking usage'
+bray_smoking <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = smoking), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by smoking status")
+bray_smoking
+
+perm_smoking <- adonis2(dist1 ~ smoking,
+                    data = meta, permutations = 999, method = "bray")
+perm_smoking
+
+'Vitamin D'
+bray_vitD <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = VITAMIND), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by Vitamin D consumption")
+bray_vitD
+
+bray_vitD2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = VITAMIND), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by Vitamin D consumption")
+bray_vitD2
+
+perm_vitD <- adonis2(dist1 ~ VITAMIND,
+                    data = meta, permutations = 999, method = "bray")
+perm_vitD
+
+'Antibiotic usage'
+bray_ab <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = antibiotics), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by antibiotic usage")
+bray_ab
+
+bray_ab2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) + 
+  geom_point(aes(colour = antibiotics), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by antibiotic usage")
+bray_ab2
+
+perm_ab <- adonis2(dist1 ~ antibiotics,
+                    data = meta, permutations = 999, method = "bray")
+perm_ab
+
+'Streptococcus vaccination status'
+bray_strep <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = strep_vaccination), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by streptococcus vaccination status")
+bray_strep
+
+bray_strep2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = strep_vaccination), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by streptococcus vaccination status")
+bray_strep2
+
+perm_strep <- adonis2(dist1 ~ strep_vaccination,
+                    data = meta, permutations = 999, method = "bray")
+perm_strep
+
+'Contact with children'
+bray_child <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = children_contact), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by contact with children")
+bray_child
+
+bray_child2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = children_contact), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369")) +
+  ggtitle("Microbial composition coloured by contact with children")
+bray_child2
+
+perm_child <- adonis2(dist1 ~ children_contact,
+                    data = meta, permutations = 999, method = "bray")
+perm_child
+
+'Frailty'
+bray_frail <- plot_ordination(dat_nas_base_rel, d) +
+  geom_point(aes(colour = frailty), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369", "#69b3a2", "purple")) +
+  ggtitle("Microbial composition coloured by frailty scores (self - diagnosed)")
+bray_frail
+
+bray_frail2 <- plot_ordination(dat_nas_base_rel, d, axes = 3:4) +
+  geom_point(aes(colour = frailty), alpha = 0.85, size = 0.8, stroke = 1) +
+  scale_color_manual(values = c("#800000", "#BE7060","#008080", "#064369", "#69b3a2", "purple")) +
+  ggtitle("Microbial composition coloured by frailty scores (self - diagnosed)")
+bray_frail2
+
+perm_frail <- adonis2(dist1 ~ frailty,
+                    data = meta, permutations = 999, method = "bray")
+perm_frail
+```
+
+#ILI ANALYSIS: 1. Does the microbiome composition change between baseline vs event samples? 
+#2. Is there a difference in bacterial load between people who do vs do not get sick and event samples? 
+#3. Is there a diversity difference? 
+#4. Create a taxa bar chart, faceted by sampling time to detect difference in microbes between baseline and events. Are there different ASVs between people who do vs don't get sick? -> DESEq2
+
+```{r ILI}
+dat_nas_rel
+dat_nas
+
+'taxa bar plot'
+dat_nas_20 = tax_glom(dat_nas_rel, 'Genus') #glom at the genus level
+top = order(taxa_sums(dat_nas_20), decreasing = TRUE) #order the taxa in the phyloseq object
+top = taxa_names(dat_nas_20)[top] #take the taxa names into a new object
+dat_nas_top20 = prune_taxa(top[1:20], dat_nas_20) #take the top 20 taxa names
+top_20_df = make_phy_df(dat_nas_top20, 'Genus', prop = TRUE) #make a phy_df
+
+cols <- c("#ff7b00", #orange, coryne ceb854
+          "#9c70db", #light purple, staph
+          "#005d9d", #medium blue, moraxella
+          "#cb4bbd",
+          "#e6c900", #golden yellow, dolosigranulum
+          "#542871", #dark purple, ecoli
+          "#00b300", #green, streptococcus
+          "#cc4472", #coral pink, pseudomonas
+          "#83d7d0", #light blue, halomonas
+          "#d44d33",
+          "#676fcd",
+          "#352f00", #blue/purple, gemella 
+          "#403d57","#b97839","#84a4cb","#588038","#c68ac4","#48472a",
+          "#c9c39c","#6e2b34", 
+          "#e1275f", "#DFB0A2")
+
+tax_plot = plot_tax_bar(top_20_df, 'Genus', sample = 'sampling_time', colours = cols, legloc = 'bottom')  
+   # facet_grid(~sex) +
+  # scale_x_discrete(labels = sample_data(dat_nas_20)$sampling_time) +
+  # theme(axis.text.x = element_blank()) +
+  # ggtitle("Microbial composition between baseline and ILI nasal samples")
+tax_plot
+svg("FIGS/taxa_baseline_ILI_summary.svg", width = 8)
+tax_plot
+dev.off()
+
+'PCoA'
+d <- ordinate(dat_nas_rel, method = "MDS", distance = "bray")
+
+otu <- otu_table(dat_nas_rel)
+otu <- abundances(otu)
+meta <- meta(dat_nas_rel)
+
+perm_ili <- adonis2(dist1 ~ sampling_time,
+            data = meta, permutations = 999, method = "bray")
+perm_ili
+
+bray_ili <- plot_ordination(dat_nas_rel, d, axes = 3:4)  +
+  geom_point(aes(colour = sampling_time), alpha = 0.6, size = 0.9, stroke = 1) +
+  scale_color_manual(values = c("Baseline" = "#E46C85", "ILI" = "#746CE4")) +
+  stat_ellipse(aes(colour = sampling_time), linetype = 2)
+bray_ili
+svg('FIGS/baseline_ili_pcoa_34.svg', width = 8)
+bray_ili
+dev.off()
+
+'alpha diversity measures'
+set.seed(0)
+dat_nas_rare = rarefy_even_depth(dat_nas)
+
+nas_df = data.frame(sample_data(dat_nas))
+
+alpha_nas = estimate_richness(dat_nas_rare, measures = c("Shannon", "Observed", "Simpson"))
+nas_df <- cbind(sample_data(dat_nas_rare), alpha_nas)
+head(nas_df)
+nas_df$bac_load_log = as.numeric(nas_df$bac_load_log) 
+
+nas_df <- nas_df %>% filter(sample_type == 'Nasal_mt')
+
+'Stats - july 2'
+nas_df$sampling_time <- factor(nas_df$sampling_time, levels = c("Baseline", "ILI"))
+
+anova.s <- lmer(bac_load_log ~ sampling_time + (1|BW_ID), nas_df)
+s <- anova(anova.s)
+
+'Baseline (non ILI) - Baseline (ILI)'
+dat_nas = (dat_nas
+           %>% subset_samples(sampling_time == 'Baseline'))
+dat_nas
+
+dat_nas_rel = (dat_nas_rel
+               %>% subset_samples(sampling_time == 'Baseline'))
+dat_nas_rel
+
+'PCoA'
+df <- ordinate(dat_nas_rel, method = "MDS", distance = "bray")
+
+otu <- otu_table(dat_nas_rel)
+otu <- abundances(otu)
+meta <- meta(dat_nas_rel)
+
+dat_nas_rel <- dat_nas_rel %>% subset_samples(ILI != 'NA')
+
+perm_i <- adonis2(dist1 ~ ILI,
+            data = meta, permutations = 999, method = "bray")
+perm_i
+
+bray_i <- plot_ordination(dat_nas_rel, df, axes = 3:4)  +
+  geom_point(aes(colour = ILI), alpha = 0.6, size = 0.9, stroke = 1) +
+  scale_color_manual(values = c("No" = "#F69153", "Yes" = "#6CBCE4")) +
+  stat_ellipse(aes(colour = ILI), linetype = 2)
+bray_i
+svg('FIGS/baseline_baseline_pcoa_34.svg', width = 8)
+bray_i
+dev.off()
+
+'alpha div'
+dat_nas_rare = rarefy_even_depth(dat_nas)
+
+nas_df_b = data.frame(sample_data(dat_nas))
+
+alpha_nas_b = estimate_richness(dat_nas_rare, measures = c("Shannon", "Observed", "Simpson"))
+nas_df_b <- cbind(sample_data(dat_nas_rare), alpha_nas_b)
+head(nas_df)
+nas_df_b$bac_load_log = as.numeric(nas_df_b$bac_load_log) 
+
+'stats - july 2'
+nas_df_b$ILI <- factor(nas_df_b$ILI, levels = c("No", "Yes"))
+
+nas_df_b <- nas_df_b %>% filter(ILI != 'NA')
+
+anova.s <- lmer(bac_load_log ~ ILI + (1|BW_ID), nas_df_b)
+s <- anova(anova.s)
+
+anova.simp <- lmer(Observed ~ ILI + (1|BW_ID), nas_df_b)
+a <- anova(anova.simp)
+
+p <- ggplot(data = nas_df_b, aes(x = ILI, y = bac_load_log)) +
+  geom_boxplot(fill = NA, outlier.colour = NA) +
+  geom_jitter(aes(colour = ILI), alpha = 0.85, width = 0.2) +
+  geom_boxplot(aes(color = ILI), fill = NA) +
+  xlab ("Baseline (non - ILI) vs Baseline (ILI)") + 
+  ylab ("Bacterial load (16S rRNA copies (log))") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  scale_color_manual(values = c("No" = "#F69153", "Yes" = "#6CBCE4"))
+p
+svg("FIGS/baseline_baseline_bacload.svg", width = 8)
+p
+dev.off()
+```
+
+```{Differential abundance analysis}
+'Are there different ASVs between non infected and infected baseline individuals?'
+dat_nas <- filter_taxa(dat_nas, function(x) sum(x > 0) > (0.05*length(x)), TRUE) #removing species not seen > 10% of samples
+dat_nas <- dat_nas %>% subset_samples(ILI != 'NA') #123 taxa
+
+sample_data(dat_nas_less)$ILI <- factor(sample_data(dat_nas_less)$ILI, levels = c("Yes", "No"))
+
+dds <- phyloseq_to_deseq2(dat_nas_less, ~ ILI) #convert to DESeq2 and DGEList objects
+dds <- DESeq(dds, test = "Wald", fitType = "local", sfType = "poscounts")
+plotDispEsts(dds)
+res <- lfcShrink(dds, coef=2, type="apeglm") #Adds shrunken log2 fold changes (LFC) and SE to a results table from DESeq run without LFC shrinkage.
+plotMA(dds)
+
+deseq_res_df <- data.frame(res) %>%
+  rownames_to_column(var = "Species") %>%
+  dplyr::arrange(padj)                                 
+
+fdr_deseq <- deseq_res_df %>%
+    dplyr::filter(padj < 0.05) %>%
+    dplyr::filter(baseMean > 15) %>%
+    arrange(baseMean, decreasing = TRUE)
+
+dim(fdr_deseq)
+head(fdr_deseq)
+
+tab <- psmelt(dat_nas)
+write.csv(tab, "dat_nas_july2_psmelted.csv")
+write.csv(fdr_deseq, "deseq2_ILI_results.csv")
+
+pl <- ggplot(fdr_deseq, aes(x = Species, y = log2FoldChange, color = Species)) +
+    geom_point(size = 3.5) +
+    labs(y = "\nLog2 Fold-Change", x = "") +
+    theme(axis.text.x = element_text(color = "black", size = 12),
+          axis.text.y = element_text(color = "black", size = 12),
+          axis.title.y = element_text(size = 14),
+          axis.title.x = element_text(size = 14),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 12),
+          legend.position = "none") +
+    coord_flip() +
+    geom_hline(yintercept = 0, linetype="dotted") +
+    scale_color_brewer(palette = "Set1")
+pl
+svg("FIGS/ASVs_ILI_sig.svg", width = 10)
+pl
+dev.off()
+```
+
+1. How many clusters are in the dataset with both baseline and the follow up samples?
+```{r Bray Nasal Trees}
+set.seed(4)
+dat_nas_rare = rarefy_even_depth(cleaned_dat)
+dat_nas_rare
+
+dat_nas_21
+dat_nas_21_rare
+#d #Bray Curtis distance
+dbf <- ordinate(dat_rel, method = "MDS", distance = "bray")
+xbf = phyloseq:::scores.pcoa(dbf, display="sites")
+
+# x_21 = phyloseq:::scores.pcoa(d21, display="sites")
+
+dist <- phyloseq::distance(dat_nas_rare, method = "bray") #measuring distance 
+
+dist_21 <- phyloseq:::distance(dat_nas_21_rare, method = "bray")
+write.csv(as.matrix(dist), "8 cluster_distances_ASV_nasal_june23.csv")
+dist2 <- read.csv("8 cluster_distances_ASV_nasal_june23.csv")
+#between samples
+#dist2 <- phyloseq::distance(dat_nas_base_rare, method = ) aitchisons distance
+#Use NbClust package to determine the optimal # of clusters; it doesn't have Bray Curtis
+#distance built in, so supply it with the distance matrix (dist1) and set distance to NULL
+#Set the min and max number of clusters you would like to test between.
+nb.hi.bf <- NbClust(data = xbf, diss = dist, distance = NULL, min.nc = 2, max.nc = 10, method = "complete", index = "all", alphaBeale = 0.1)
+nb.hi.bf
+
+nb.hi.21 <- NbClust(data = x_21, diss = dist_21, distance = NULL, min.nc = 2, max.nc = 29, method = "complete", index = "all", alphaBeale = 0.1)
+```
+
+#Cluster the data without the event samples (baseline and followup)
+```{r Clustering data using hierarchical clustering}
+hier.cluster <- hclust(dist) 
+
+#Define clustering and label order variables for later use
+hc.labels <- cutree(hier.cluster, k = 8) #k = # of optimal clusters
+hc.labels
+hc.order <- labels(hier.cluster) #character vector
+
+#remake phyloseq object
+#call map file
+map <- meta(sample_data(dat_nas_rare))
+#add hc.labels
+map <- cbind(map, hc.labels)
+map$hc.labels <- as.factor(map$hc.labels)
+write.csv(map, "8 clusters - june 23 FSF.csv")
+map <- read.csv("8 clusters - june 23 FSF.csv")
+
+rownames(map) = map$sample_id
+#remake phyloseq object
+new <- phyloseq(tax_table(dat_nas_rare),
+                sample_data(map),
+                otu_table(otu_table(dat_nas_rare), taxa_are_rows = TRUE))
+new 
+
+#arranging the labels with the clusters
+clustdf <- data.frame(cluster = sample_data(new)$cluster,
+                      SampleID= sample_data(new)$sample_id,
+                      ParticipantID = sample_data(new)$participant_id,
+                      season = sample_data(new)$sampling_season,
+                      sea_son = sample_data(new)$season)
+
+write.csv(clustdf, "10_clusters_noevent_map.csv")
+#head(clustdf)
+clustdf$cluster <- factor(clustdf$cluster, levels = c("1","2", "3", "4", "5", "6", "7", "8"))
+#clustdf$site <- factor(clustdf$site, levels = c("AN", "MT"))
+#Cluster colour definition
+cluster.colours.k7 <- c("1" = "#ff7518",#coryne2
+                        "2" = "#9c70db", #staph2
+                        "3" = "#005d9d", #mixed
+                        "4" = "#cc7000", #coryne3
+                        "5" = "#800080", #dark purple; staph 1
+                        "6" = "#f99552", #coryne1
+                        "7" = "#db7461",  #coryne 4
+                        "8" = "#ce0882", #morax; 
+                        
+                        "9" = "#ffa162",
+                        "10" = "#4eaf24",
+                        "11" = "#4eaf24",
+                        "12" = "#4eaf24") #group cluster 10 and 11 in the same group
+                        # "12" = "#48472a",
+                        # "13" = "#c9c39c",
+                        # "14" = "#6e2b34",
+                        # "15" = "#e1275f") 
+#FF5733
+
+```
+
+#Draw dendrogram based on hierarchical clustering with follow up samples ONLY
+```{r Dendrogram}
+#Plot clustering results on dendrogram
+f <- split(names(hc.labels), hc.labels) #split divides data from vector x by vector f - in this case dividing the data by the names of the labels, or the StudyIDs
+f
+
+e <- ggtree(hier.cluster, ladderize = FALSE) #draws tree from phyloseq object, ladderize=FALSE so the tree is not re-organized with a ladder object
+e
+
+clades.fu <- sapply(f, function(n) MRCA(e, n)) #returning a vector or g and p
+clades.fu
+
+e <- groupClade(e, clades.fu, group_name='subtree') #grouping clades
+
+d <- data.frame(label = names(hc.labels), 
+                clust = clustdf$cluster,
+                season = clustdf$season,
+                sea_son = clustdf$sea_son)
+
+fu.tree <- e %<+% d + 
+  layout_dendrogram() + 
+  geom_tippoint(size = 2, shape = 15, aes(colour=factor(clust))) + 
+  # geom_tiplab(aes(label = season), angle = 45, size = 1, hjust= .9) +
+  #geom_tiplab(angle = 45, hjust=1, offset=0, show.legend=F) + 
+  scale_colour_manual(values = cluster.colours.k7) +
+  #theme_dendrogram(plot.margin=margin(6,6,80,6)) +
+  theme(legend.position="none") + #c(.9, .6))theme(legend.position="none") 
+  ggtitle("Taxonomic composition of the nasal cavity")
+fu.tree
+svg('dendrogram_8clust.svg', width = 20)
+fu.tree
+dev.off()
+
+season_cols <- c("#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3")
+
+fu.tree2 <- e %<+% d +
+        layout_dendrogram() +
+        geom_tippoint(size = 2, shape = 15, aes(colour=season)) +
+        scale_colour_manual(values = season_cols) +
+        theme(legend.position = "bottom")
+fu.tree2
+svg('FIGS/season_dendrogram.svg', width = 10)
+fu.tree2
+dev.off()
+
+p.tree <- p %<+% d + 
+  layout_dendrogram() + 
+  geom_tippoint(size = 2, shape = 15, aes(colour=factor(condition))) + 
+  # geom_tiplab(aes(label = condition), angle = 45, size = 1, hjust= .9) +
+  #geom_tiplab(aes(label = clustdf$site), angle = 45, size = 3, hjust=.5) +
+  #geom_tiplab(angle = 45, hjust=1, offset=0, show.legend=F) + 
+  scale_fill_brewer(palette = "Dark2") +
+  # scale_colour_manual(values = cluster.colours.k4) +
+  #theme_dendrogram(plot.margin=margin(6,6,80,6)) +
+  theme(legend.position="bottom")  #c(.9, .6))theme(legend.position="none") 
+  # ggtitle("Taxonomic composition of the nasal cavity - inflammatory conditions")
+p.tree
+```
+
+#"Alex's code: this is a key line, gets order of tips (unfortunately from right to left)" FOLLOW UP SAMPLES ONLY
+```{r Reordering dendrogram}
+sample_order <- get_taxa_name(fu.tree)
+sample_order
+sample_order_rev_fu <- rev(sample_order)
+write.csv(sample_order_rev_fu, "6clusters_sample_order_FAll21.csv")
+#colours for taxa bar plot
+cols <- c("#ff7b00", #orange, coryne ceb854
+          "#9c70db", #light purple, staph
+          "#005d9d", #medium blue, moraxella
+          "#cb4bbd",
+          "#e6c900", #golden yellow, dolosigranulum
+          "#542871", #dark purple, ecoli
+          "#00b300", #green, streptococcus
+          "#cc4472", #coral pink, pseudomonas
+          "#83d7d0", #light blue, halomonas
+          "#d44d33",
+          "#676fcd",
+          "#352f00", #blue/purple, gemella 
+          "#403d57","#b97839","#84a4cb","#588038","#c68ac4","#48472a",
+          "#c9c39c","#6e2b34", 
+          "#e1275f", "#DFB0A2")
+#"Use match to re-order OTU tables and map file by dendrogram tip order"
+#"OTU table reordering, probably not necessary"
+#new_otu <- otu_table(dat)[match(sample_order, row.names(otu_table(dat))),]
+fu_map <- sample_data(new)[match(sample_order, row.names(sample_data(new))),]
+
+#"Add a vector that preserves the order of the dendrogram tips to new map file"
+#"Which are inexplicably give from right to left, hence reverse order of vector, new_order"
+fu_order = nrow(fu_map):1
+fu_order
+fu_map <- cbind(fu_map, fu_order)
+
+#"New taxa table is old taxa table"
+fu_tax <- tax_table(new)
+fu_otu <- otu_table(new)
+#na.omit(new_tax)
+
+#"Rebuild that object"
+fu_dat <- phyloseq(tax_table(fu_tax),
+                    sample_data(fu_map),
+                    otu_table(fu_otu, taxa_are_rows = TRUE))
+
+#"Relativize that object"
+fu_dat_rel <- transform_sample_counts(fu_dat, function(x) x/sum(x))
+m <- sample_data(fu_dat_rel)
+write.csv(m, "6clusters_Fall2021.csv")
+
+dat_rel <- transform_sample_counts(dat, function(x) x/sum(x))
+```
+
+#Plotting taxa bar plots using Jake's function FOLLOW UP SAMPLES ONLY
+```{r Taxa bar charts}
+fu_dat_nas_gen = tax_glom(fu_dat_rel, 'Genus') #glom at the genus level #fu_dat_rel
+fu_top_tax = order(taxa_sums(fu_dat_nas_gen), decreasing = TRUE) #order the taxa in the phyloseq object
+fu_top_tax = taxa_names(fu_dat_nas_gen)[fu_top_tax] #take the taxa names into a new object
+fu_dat_nas_top = prune_taxa(fu_top_tax[1:20], fu_dat_nas_gen) #take the top 20 taxa names
+fu_top_gen_df = make_phy_df(fu_dat_nas_top, 'Genus', cutoff = 0.001, prop = TRUE) #make a phy_df
+sample_data(fu_top_gen_df)
+#head(top_gen_df) #choose abundance column from data frame
+fu_top_gen_df
+
+fu_tax_plot = plot_tax_bar(fu_top_gen_df, 'Genus', sample = 'fu_order', abund = 'Abundance', colours = cols, legloc = "bottom" #sample = order of x-axis, which in this case we want to be the order of the dendrogram tips...which i stored in new_order"
+                        ) + 
+  scale_x_discrete(labels = rev(clustdf$SampleID)) +
+  theme(axis.text.x = element_blank())
+  #geom_text(aes(label = clustdf$site))
+#ggtitle("Anterior nares nasal samples collected during Fall 2018, raw")
+fu_tax_plot
+
+'sample # per cluster'
+map$dom_genus <- as.factor(map$dom_genus)
+colours <- c("Coryne2" = "#ff7518",#coryne2
+                        "Staph2" = "#9c70db", #staph2
+                        "Mixed" = "#005d9d", #mixed
+                        "Coryne3" = "#cc7000", #coryne3
+                        "Staph1" = "#800080", #dark purple; staph 1
+                        "Coryne1" = "#f99552", #coryne1
+                        "Coryne4" = "#db7461",  #coryne 4
+                        "Morax" = "#ce0882")
+                        
+s <- ggplot(map, aes(dom_genus, fill = dom_genus, color = dom_genus)) +
+  scale_fill_manual(values = colours) + #morax, #8
+  scale_colour_manual(values = colours) +
+  geom_bar() + 
+  xlab("Cluster Number") +
+  ylab("Number of samples") +
+  theme(
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        axis.text = element_text(size = 14),
+        axis.title = element_text(size = 14))
+s
+svg('FIGS/# of samples per cluster.svg', width = 10)
+s
+dev.off()
+
+fu_tree <- fu.tree /
+  fu_tax_plot
+fu_tree
+svg('FIGS/NASAL_8clusters_june24.svg', width = 15)
+fu_tree
+dev.off()
+
+#print the taxa bar chart with the labels
+fu_tax_plot_l = plot_tax_bar(fu_top_gen_df, 'Genus', sample = 'fu_order', abund = 'Abundance', colours = cols, #sample = order of x-axis, which in this case we want to be the order of the dendrogram tips...which i stored in new_order"
+                        legloc = 'bottom') + 
+  scale_x_discrete(labels = rev(sample_data(fu_dat_nas_top)$BW_ID))
+fu_tax_plot_l
+svg('Fall21_labelled_taxplot.svg', width = 30)
+fu_tax_plot_l
+dev.off()
+
+fu_tree_labelled <- fu.tree /
+                  fu_tax_plot_l
+fu_tree_labelled
+svg('FIGS/NASAL_label_8clusters_june24.svg', width = 40)
+fu_tree_labelled
+dev.off()
+
+fu_top_gen_df$hc.labels = as.numeric(fu_top_gen_df$hc.labels)
+samdat_10$age = as.numeric(samdat$age)
+```
+
+```{r top 10 taxa}
+dat1 = subset_taxa(dat, Kingdom %in% c("Bacteria", "Archaea")) #15665 taxa #only includes bacteria AND ARCHAEA
+dat_lessHOST = subset_taxa(dat1, Order!="Chloroplast") #15293 taxa
+dat_lessCONTAM = subset_taxa(dat_lessHOST, Genus!= "Bacillus") #12703 taxa
+dat_lessCONTAM1 = subset_taxa(dat_lessCONTAM, Genus!= "Halomonas") #12666 taxa 
+dat_lessCONTAM2 = subset_taxa(dat_lessCONTAM1, Genus!= "Escherichia-Shigella") #12656 taxa 
+dat_lessCONTAM3 = subset_taxa(dat_lessCONTAM2, Genus!= "Janthinobacterium") #12630 taxa 
+dat_lessCONTAM4 = subset_taxa(dat_lessCONTAM3, Genus!= "Gordonia") #12578 ASVs 
+dat_lessCONTAM5 = subset_taxa(dat_lessCONTAM4, Genus!= "Methylobacterium-Methylorubrum") #12511 taxa
+dat_lessCONTAM6 = subset_taxa(dat_lessCONTAM5, Genus!= "UBA1819") #12193 taxa
+dat_lessCONTAM7 = subset_taxa(dat_lessCONTAM6, Genus!= "Hungatella")
+dat_lessCONTAM8 = subset_taxa(dat_lessCONTAM7, Genus!= "Bacteroides")
+cleaned_dat = subset_taxa(dat_lessCONTAM8, Family!="Mitochondria") #12193 ASVs 
+cleaned_dat  #dat_v3: 7032 taxa, 397 samples, oral v3: 145 samples, 7032 taxa
+
+dat_rel <- transform_sample_counts(cleaned_dat, function(x) x/sum(x)) #calculate relative abundance
+dat_rel
+
+dat_nas_gen = tax_glom(dat_rel, 'Genus') #glom at the genus level
+top_tax = order(taxa_sums(dat_nas_gen), decreasing = TRUE) #order the taxa in the phyloseq object
+top_tax = taxa_names(dat_nas_gen)[top_tax] #take the taxa names into a new object
+dat_nas_top = prune_taxa(top_tax[1:6], dat_nas_gen) #take the top 20 taxa names
+top_gen_df = make_phy_df(dat_nas_top, 'Genus', cutoff = 0.001, prop = TRUE) #make a phy_df
+
+sample_data(fu_top_gen_df)
+
+cols2 <- c("#ff7b00", #orange, coryne ceb854
+          "#9c70db", #light purple, staph
+          "#005d9d", #medium blue, moraxella
+          "#cb4bbd",
+          "#e6c900", #golden yellow, dolosigranulum
+          "#542871")
+#top 20 rel abund
+gen_relabun = top_gen_df %>%
+  #mutate(Genus = factor(gsub("_", " ", Genus))) %>%
+  filter(Genus != "Other")%>%
+  ggplot() +
+  aes(
+    x = Genus,
+    y = Abundance*100,
+    colour = dom_genus) + 
+  stat_summary(fun.data = "mean_se", position = position_dodge(width=0.5),
+               alpha=0.7)+
+  coord_flip()+
+  theme(
+    legend.position = c(0.9, 0.3),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(colour = 'black')) +
+    ylab("Relative Abundance (%)") +
+    # scale_y_continuous(trans="pseudo_log") +
+    xlab("Top 10 Genera") +
+  scale_colour_manual(values = c("Coryne2" = "#ff7518",#coryne2
+                        "Staph2" = "#9c70db", #staph2
+                        "Mixed" = "#005d9d", #mixed
+                        "Coryne3" = "#cc7000", #coryne3
+                        "Staph1" = "#800080", #dark purple; staph 1
+                        "Coryne1" = "#f99552", #coryne1
+                        "Coryne4" = "#db7461")) #morax
+ #  scale_x_discrete(limits=rev, labels = label_wrap(20))+
+ 
+ # #scale_shape_manual(values = c(19,8))+
+ #  scale_color_manual(values = bmi_palette, 
+ #                     name = "pBMI", 
+ #                     labels = c("<25", "25-30", ">30"))+
+ #  guides(alpha = "none", shape = "none")
+gen_relabun
+svg("FIGS/10 genera relative abundance_clustercoloured.svg", width = 10)
+gen_relabun
+dev.off()
+
+gen_relabun2 = top_gen_df %>%
+  #mutate(Genus = factor(gsub("_", " ", Genus))) %>%
+  filter(Genus != "Other")%>%
+  ggplot() +
+  aes(
+    x = Genus,
+    y = Abundance*100) + 
+  stat_summary(fun.data = "mean_se", position = position_dodge(width=0.5),
+               alpha=0.7)+
+  coord_flip()+
+  theme(
+    legend.position = c(0.9,0.3),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(colour = 'black'))+
+  ylab("Relative Abundance (%)") +
+  xlab("Top 10 Genera")
+ #  scale_x_discrete(limits=rev, labels = label_wrap(20))+
+ #  scale_y_continuous(trans="pseudo_log")+
+ # #scale_shape_manual(values = c(19,8))+
+ #  scale_color_manual(values = bmi_palette, 
+ #                     name = "pBMI", 
+ #                     labels = c("<25", "25-30", ">30"))+
+ #  guides(alpha = "none", shape = "none")
+gen_relabun2
+svg("FIGS/10 genera relative abundance.svg", width = 10)
+gen_relabun2
+dev.off()
+```
+
+```{r Clustering tests}
+#Beta dispersion
+disp <- betadisper(dist, clustdf$cluster)
+disp.anova <- anova(disp)
+disp.anova #p=< 2.2e-16*** clusters are significantly dispersed
+plot(disp, hull = FALSE, ellipse = TRUE)
+
+#Significance between each group
+disp.TukeyHSD <- TukeyHSD(disp)
+plot(disp.TukeyHSD)
+
+#PERMANOVA to test if the centroids of each group are significantly different from each other
+adonis.out <- adonis(dist ~ clustdf$cluster)
+adonis.out #p=0.001***
+
+#Analysis of Similarity (ANOSIM)
+anosim.out <- anosim(dist, grouping = clustdf$cluster) 
+anosim.out
+#R = 0.646; Positive numbers suggest that there is more similarity within groups than there is between groups.
+#signif = 0.001; so there is a significant difference between groups' similiarities.
+```
+
+```{r cluster PCoA}
+'Make a PCoA coloured by cluster'
+n <- ordinate(dat_rel, method = "MDS", distance = "bray")
+
+bray_clust <- plot_ordination(dat_rel, n)  +
+  geom_point(aes(colour = dom_genus), alpha = 0.75, size = 0.9, stroke = 1) +
+  scale_colour_manual(values = c("Coryne2" = "#ff7518",#coryne2
+                        "Staph2" = "#9c70db", #staph2
+                        "Mixed" = "#005d9d", #mixed
+                        "Coryne3" = "#cc7000", #coryne3
+                        "Staph1" = "#800080", #dark purple; staph 1
+                        "Coryne1" = "#f99552", #coryne1
+                        "Coryne4" = "#db7461")) +
+  stat_ellipse(aes(colour = dom_genus), linetype = 2)
+bray_clust
+svg('FIGS/NASAL_PCoA_7clusters_ellipse.svg', width = 10)
+bray_clust
+dev.off()
+
+bray_c2_fu <- plot_ordination(dat_rel, n, axes = 3:4)  +
+  geom_point(aes(color = dom_genus), alpha = 0.75, size = 0.9, stroke = 1) +
+  scale_color_manual(values = c("Coryne2" = "#ff7518",#coryne2
+                        "Staph2" = "#9c70db", #staph2
+                        "Mixed" = "#005d9d", #mixed
+                        "Coryne3" = "#cc7000", #coryne3
+                        "Staph1" = "#800080", #dark purple; staph 1
+                        "Coryne1" = "#f99552", #coryne1
+                        "Coryne4" = "#db7461")) +
+  stat_ellipse(aes(colour = dom_genus), linetype = 2)
+bray_c2_fu
+svg('FIGS/NASAL_PCoA_7clusters_axis34.svg', width = 10)
+bray_c2_fu
+dev.off()
+```
+
+#Plotting taxa bar plots at the ASV level for each bacterium
+#Corynebacterium ASVs
+```{r Taxa bar charts ASV level}
+#plot at the asv level
+fu_top_tax = order(taxa_sums(fu_dat_rel), decreasing = TRUE) #order the taxa in the phyloseq object
+fu_top_tax = taxa_names(fu_dat_rel)[fu_top_tax] #take the taxa names into a new object
+fu_dat_nas_top = prune_taxa(fu_top_tax[1:20], fu_dat_rel) #take the top 20 taxa names
+asv_df = make_phy_df(fu_dat_nas_top, 'OTU', cutoff = 0.001, prop = TRUE)
+
+# asv_df = make_phy_df(fu_dat_rel, 'OTU', cutoff = 0.001, prop = FALSE)
+#head(asv_df)
+#filter only corynebacterium asv's
+asv_df_cor <- asv_df %>%
+              mutate(Genus_Cory = case_when(Genus == "Corynebacterium" ~
+                       paste("Corynebacterium"),
+                     TRUE ~ paste("Other"))) #when not true, paste Other #first make a new column with only corynbacterium genus' & everything else as other
+
+#head(asv_df_cor)
+asv_df_cor_asv <- asv_df_cor %>%
+                  mutate(OTU_Cory = case_when(Genus_Cory == "Corynebacterium" ~
+                       paste(OTU),
+                     TRUE ~ paste("Other"))) #then make a second column, choosing only corynebacterium genus' and picking their corresponding OTUs
+
+head(asv_df_cor_asv)
+asv_df_cor_asv_check <- asv_df_cor_asv %>% select(OTU, Genus_Cory, OTU_Cory) #check to ensure the original OTUs match with the new column
+
+cols_c <- c("#403d57","#b97839","#84a4cb","#e0c029","#c68ac4","#48472a",
+          "#c9c39c","#6e2b34", 
+          "#e1275f", "#DFB0A2", "#C4341A", "#E5714F", "#e69138", "#BB694E",
+          "#feda75", "#fa7e1e", "#d62976", "#962fbf", "#ff9248", "#dc6900", "#eb8c00",
+          "#ff4e50", "#f9d62e", "#ffb38a", "#4f5bd5")
+
+cory_plot = plot_tax_bar(asv_df_cor_asv, 'OTU_Cory', sample = 'fu_order', abund = 'Abundance', 
+                         colours = cols_c) +
+  # scale_x_discrete(labels = rev(sample_data(fu_dat_rel)$StudyID)) +
+  theme(axis.text.x = element_blank()) 
+  # ggtitle("Corynebacterium ASVs")
+cory_plot
+svg('FIGS/CORYN_ASV_plot_alone.svg', width = 10)
+cory_plot
+dev.off()
+
+cory_tree <- fu.tree /
+            cory_plot
+cory_tree
+svg('CORYNE_TREE_8clusters_june24.svg', width = 10)
+cory_tree
+dev.off()
+```
+
+#Staphylococcus ASVs
+```{r Staph ASVs}
+#filter only staphylococcus asvs
+asv_df_staph <- asv_df %>%
+  mutate(Genus_Staph = case_when(Genus == "Staphylococcus" ~
+                                  paste("Staphylococcus"),
+                                TRUE ~ paste("Other"))) #when not true, paste Other #first make a new column with only corynbacterium genus' & everything else as other
+
+#head(asv_df_staph)
+asv_df_staph_asv <- asv_df_staph %>%
+  mutate(OTU_Staph = case_when(Genus_Staph == "Staphylococcus" ~
+                                paste(OTU),
+                              TRUE ~ paste("Other"))) #then make a second column, choosing only corynebacterium genus' and picking their corresponding OTUs
+
+#head(asv_df_staph_asv)
+asv_df_staph_asv_check <- asv_df_staph_asv %>% select(OTU, Genus_Staph, OTU_Staph) #check to ensure the original OTUs match with the new column
+
+cols_s <- c("#5D3FD3",
+            "#CF9FFF",
+            "#770737",
+            "#800080",
+            "#D8BFD8",
+            "#7F00FF",
+            "#722F37",
+            "#673147",
+            "#A95C68",
+            "#E0B0FF",
+            "#352f00", #blue/purple, gemella 
+            "#b97839","#403d57","#84a4cb","#588038","#c68ac4","#48472a",
+            "#c9c39c","#6e2b34", "#c78889")
+
+staph_plot = plot_tax_bar(asv_df_staph_asv, 'OTU_Staph', sample = 'fu_order', abund = 'Abundance', 
+                         colours = cols_s) + 
+  scale_x_discrete(labels = rev(sample_data(fu_dat_rel)$StudyID)) +
+  theme(axis.text.x = element_blank())
+  # ggtitle("Staphylococcus ASVs")
+staph_plot
+svg('FIGS/Staph_ASVs_plot_alone.svg', width = 10)
+staph_plot
+dev.off()
+
+staph_tree <- fu.tree /
+  staph_plot
+staph_tree
+svg('FIGS/STAPH_TREE_8clusters_june24.svg', width = 10)
+staph_tree
+dev.off()
+
+
+big_tree <- fu.tree /
+            fu_tax_plot /
+            cory_plot /
+            staph_plot
+big_tree
+svg('FIGS/FSF_tree_stacked_june24_8clusters.svg', width = 16)
+big_tree
+dev.off()
+```
+
+#DIFFERENTIAL ABUNDANCE ANALYSIS
+#Are there any specific ASVs associated with the metadata (age, sex, bacterial load, vitamin D consumption, frailty scores, smoking, contact with children, antibiotics usage, streptococcus vaccination status)? 
+```{r DESeq2 model}
+"August 11 note: test all 3 sampling timepoints (Fall '20, '21, Spring '21) to determine if there are difference within each timepoint + bacterial load and report all 3 if there are differences."
+
+sam <- sample_data(cleaned_dat)
+
+write.csv(sam, "samplemap_august11.csv")
+sam <- read.csv("samplemap_august11.csv")
+
+sam$bac_load_log <- as.numeric(sam$bac_load_log)
+
+rownames(sam) = sam$sample_id
+dat_new <- phyloseq(tax_table(cleaned_dat),
+                         sample_data(sam),
+                         otu_table(otu_table(cleaned_dat), taxa_are_rows = TRUE))
+
+
+fall_20 = (dat_new %>% subset_samples(sampling_season == "Fall_20")) #166 samples
+fall_21 = (dat_new %>% subset_samples(sampling_season == "Fall_21")) #104 samples
+spring_21 = (dat_new %>% subset_samples(sampling_season == "Spring_21")) #119 samples
+
+fall_20 <- filter_taxa(fall_20, function(x) sum(x > 0) > (0.05*length(x)), TRUE) #238 taxa
+fall_21 <- filter_taxa(fall_21, function(x) sum(x > 0) > (0.05*length(x)), TRUE) #237 taxa
+spring_21 <- filter_taxa(spring_21, function(x) sum(x > 0) > (0.05*length(x)), TRUE) #301 taxa
+
+
+dds <- phyloseq_to_deseq2(fall_20, ~ age) #convert to DESeq2 and DGEList objects
+dds <- DESeq(dds, test = "Wald", fitType = "local", sfType = "poscounts")
+plotDispEsts(dds)
+resultsNames(dds)
+res <- lfcShrink(dds, coef = c('age'), type="apeglm")
+
+res <- (res
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% filter(baseMean > 20)
+  %>% arrange(baseMean, decreasing = TRUE))
+res
+
+sigtab_site = cbind(as(res, "data.frame"), as(tax_table(fall_20)[rownames(res), ], "matrix"))
+
+write.csv(sigtab_site, "significant asvs with individuals who got infected_Fall20.csv")
+sigtab_site_map = cbind(as(sigtab_site, "data.frame"), as(sample_data(fall_20)[rownames(res), ], "matrix"))
+
+#plot
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+  scale_fill_brewer(palette = palname, ...)
+}
+
+#Genus order
+x = tapply(sigtab_site$log2FoldChange, sigtab_site$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_site_filt$Genus = factor(as.character(sigtab_site_filt$Genus), levels=names(x))
+
+fall_plot <- ggplot(sigtab_site, aes(x = Genus, y = log2FoldChange)) + 
+              geom_point(size = 3.5, alpha = 0.75) +               
+              theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + 
+            labs(y = "\nLog2 Fold-Change", x = "") +
+            theme(axis.text.x = element_text(color = "black", size = 15),
+          axis.text.y = element_text(color = "black", size = 15),
+          axis.title.y = element_text(size = 15),
+          axis.title.x = element_text(size = 15),
+          legend.text = element_text(size = 15),
+          legend.title = element_text(size = 15),
+          legend.position = "none") +
+        coord_flip() +
+      geom_hline(yintercept = 0, linetype="dotted") +
+      scale_color_brewer(palette = "Paired")
+fall_plot
+svg('FIGURES/DESEq2_samplesite_noprev.svg', width = 10)
+site_plot
+dev.off()
+
+nasoral_data = (nasoral_data
+                %>% mutate(sample_type = as.factor(sample_type),
+                           sample_type = relevel(sample_type, 'Nasal_mt')))
+#model
+mod = phyloseq_to_deseq2(subset_samples(dat_nasbase_oral),
+                         ~sample_type)
+dds = DESeq(mod, sfType = 'poscounts')
+
+#Use lfcShrink to get reasonable log2 fold change estimates:
+resultsNames(dds)
+#Use lfcShrink to get reasonable log2 fold change estimates:
+resultsNames(dds)
+res_site = lfcShrink(dds, coef = c('sample_type_Salivette_vs_Nasal_mt'))
+res_site <- (res_site
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+res_site
+
+sigtab_site = cbind(as(res_site, "data.frame"), as(tax_table(dat_nasbase_oral)[rownames(res_site), ], "matrix"))
+
+sigtab_site_map = cbind(as(sigtab_site, "data.frame"), as(sample_data(dat_nasbase_oral)[rownames(res_site), ], "matrix"))
+
+sigtab_site_filt <- (sigtab_site 
+  %>% filter(padj < 0.05)
+  %>% filter(baseMean > 10)
+  %>% arrange(baseMean, decreasing = TRUE))
+head(sigtab_site_filt)
+write.csv(sigtab_bac_filt, "deseq_sig_bacload_baseMean >10.csv")
+
+#plot
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+  scale_fill_brewer(palette = palname, ...)
+}
+
+#Genus order
+x = tapply(sigtab_site_filt$log2FoldChange, sigtab_site_filt$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_site_filt$Genus = factor(as.character(sigtab_site_filt$Genus), levels=names(x))
+
+site_plot <- ggplot(sigtab_site_filt, aes(x = Genus, y = log2FoldChange)) + geom_point(size = 1.5, alpha = 0.75) +               theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + ggtitle("Differentially abundant ASVs associated with sample sites in the nasal and oral cavities (Genus)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+site_plot
+svg('FIGURES/DESEq2_samplesite_noprev.svg', width = 10)
+site_plot
+dev.off()
+
+#Differential abundance
+p.10 <- core(dat_nas_base, detection = 0, prevalence = 10/100) #152 taxa with 251 samples #use a prevalence cut off of 10%
+p.10 
+str(p.10)
+samdat_10 = data.frame(sample_data(p.10)) 
+samdat_10$age = as.numeric(samdat$age)  #change class to numeric, because it comes up as character for some reason
+'#try using DESeq2 without ANY cutoffs first'
+samdat = data.frame(sample_data(dat_nas_base))
+samdat$age = as.numeric(samdat$age)
+age_scale = scale(samdat$age, center = TRUE, scale = TRUE)
+samdat$geo_avg = as.numeric(samdat$geo_avg)
+samdat <- cbind(samdat, age_scale)
+names(samdat)
+'try using DESeq2 with a 10% prevalence cut off (present in 90% of the samples)'
+
+samdat = (samdat
+          %>% mutate(VITAMIND = as.factor(VITAMIND),
+                     VITAMIND = relevel(VITAMIND, 'N'),
+                     sex = as.factor(sex),
+                     sex = relevel(sex, 'M'),
+                     strep_vaccination = as.factor(strep_vaccination),
+                     strep_vaccination = relevel(strep_vaccination, 'N'),
+                     smoking = as.factor(smoking),
+                     smoking = relevel(smoking, 'N'),
+                     INFLAM.CONDITIONS = as.factor(INFLAM.CONDITIONS),
+                     INFLAM.CONDITIONS = relevel(INFLAM.CONDITIONS, '0'),
+                     frailty = as.factor(frailty),
+                     frailty = relevel(frailty, 'N-0'),
+                     children_contact = as.factor(children_contact),
+                     children_contact = relevel(children_contact, 'N'),
+                     antibiotics = as.factor(antibiotics),
+                     antibiotics = relevel(antibiotics, 'N'),
+                     antiinflam_meds = as.factor(antiinflam_meds),
+                     antiinflam_meds = relevel(antiinflam_meds, '0'),
+                     infected_2021 = as.factor(infected_2021),
+                     infected_2021 = relevel(infected_2021, 'Yes'))
+          )
+sample_data(dat_nas_base) = samdat
+head(samdat)
+#head(samdat)
+dat_nas_base_map <- sample_data(dat_nas_base)
+write.csv(dat_nas_base_map, "mapfile.csv")
+
+'MODEL FOR INFECTED VERSUS UNINFECTED INDIVIDUALS'
+m = phyloseq_to_deseq2(subset_samples(dat_nas_base),
+                       ~infected_2021)
+dds = DESeq(m, sfType = 'poscounts')
+resultsNames(dds)
+
+'RESULTS OF THE MODEL'
+res_inf = lfcShrink(dds, coef = c('infected_20211'))
+res_inf <- (res_inf
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% filter(baseMean > 20)
+  %>% arrange(baseMean, decreasing = TRUE))
+head(res_inf)
+sigtab_inf = cbind(as(res_inf, "data.frame"), as(tax_table(dat_nas_base)[rownames(res_inf), ], "matrix"))
+sigtab_inf_map = cbind(as(sigtab_inf, "data.frame"), as(sample_data(dat_nas_base)[rownames(res_inf), ], "matrix"))
+sigtab_inf_map_otu = cbind(as(sigtab_inf_map, "data.frame"), as(otu_table(dat_nas_base)[rownames(res_inf), ], "matrix"))
+head(sigtab_inf_map_otu)
+write.csv(sigtab_inf_map, "deseq_results_infected_uninfected_march22.csv")
+
+dat <- psmelt(dat_nas_base_rel)
+head(dat)
+write.csv(dat, "psmelted_dat_nas_base_rel.csv")
+
+'PLOTTING THE RESULTS'
+#Genus order
+x = tapply(sigtab_inf_map$log2FoldChange, sigtab_inf_map$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_inf_map$Genus = factor(as.character(sigtab_inf_map$Genus), levels=names(x))
+
+inf_plot <- ggplot(sigtab_inf_map, aes(x = log2FoldChange , y = Genus)) + 
+            geom_point(aes(color = Family), size = 1.5, alpha = 0.75) + 
+            theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + 
+            ggtitle("Differentially abundant ASVs associated with infection status in the mid turbinates (Genus)") +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+            panel.background = element_blank(), axis.line = element_line(colour = "black"))
+inf_plot
+svg('FIGURES/diffabund_infected.svg', width = 10)
+inf_plot
+dev.off()
+
+mod = phyloseq_to_deseq2(subset_samples(dat_nas_base),
+                         ~age + sex + VITAMIND + smoking + INFLAM.CONDITIONS + frailty +
+                           children_contact + antibiotics + antiinflam_meds + geo_avg + infected_2021)
+dds = DESeq(mod, sfType = 'poscounts')
+
+res_age = lfcShrink(dds, coef = c('age_scale'))
+(res_age
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+sigtab = cbind(as(res_age, "data.frame"), as(tax_table(p.10)[rownames(res_age), ], "matrix"))
+(sigtab 
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE)) #cutibacterium decreases with each year of age, with a taxon abundance of 1?
+
+res_inf = lfcShrink(dds, coef = c('INFLAM.CONDITIONS_1_vs_0'))
+(res_inf 
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+sigtab_inf = cbind(as(res_inf, "data.frame"), as(tax_table(p.10)[rownames(res_inf), ], "matrix"))
+(sigtab_inf 
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+write.csv(sigtab_inf, "deseq_sig_inflammation_1vs0.csv")
+
+res_inf2 = lfcShrink(dds, coef = c('INFLAM.CONDITIONS_2._vs_0'))
+(res_inf2 
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+sigtab_inf2 = cbind(as(res_inf2, "data.frame"), as(tax_table(p.10)[rownames(res_inf2), ], "matrix"))
+(sigtab_inf2
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+#write.csv(sigtab_inf2, "deseq_sig_inflammation_2vs0.csv")
+
+#res_bac = lfcShrink(dds, coef = c('bac_load'))
+#res_bac = cbind(as(res_bac, "data.frame"), as(tax_table(p.25)[rownames(res_bac), ], "matrix"))
+
+#res_bac_sig <- (res_bac
+                #%>% filter(padj < 0.05)
+                #%>% arrange(baseMean, decreasing = TRUE))
+#res_bac_sig
+
+res_smoke = lfcShrink(dds, coef = c('smoking_Y_vs_N'))
+(res_smoke
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+sigtab_smoke = cbind(as(res_smoke, "data.frame"), as(tax_table(p.10)[rownames(res_smoke), ], "matrix"))
+(sigtab_smoke
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+write.csv(sigtab_smoke, "deseq_sig_smoking.csv")
+
+res_sex = lfcShrink(dds, coef = c('sex_F_vs_M'))
+(res_sex
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+sigtab = cbind(as(res_sex, "data.frame"), as(tax_table(p.10)[rownames(res_sex), ], "matrix"))
+(sigtab 
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+str(sigtab)
+write.csv(sigtab, "deseq_sig_sex.csv")
+
+res_ab = lfcShrink(dds, coef = c('antibiotics_Y_vs_N'))
+(res_ab
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+res_frail = lfcShrink(dds, coef = c('frailty_N.1_vs_N.0'))
+(res_frail
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+res_bac = lfcShrink(dds, coef = c('geo_avg'))
+(res_bac
+  %>% data.frame()
+  %>% filter(padj < 0.05)
+  %>% arrange(baseMean, decreasing = TRUE))
+
+sigtab_bac = cbind(as(res_bac, "data.frame"), as(tax_table(dat_nas_base)[rownames(res_bac), ], "matrix"))
+
+sigtab_bac_map = cbind(as(sigtab_bac, "data.frame"), as(sample_data(dat_nas_base)[rownames(res_bac), ], "matrix"))
+sigtab_bac_filt <- (sigtab_bac 
+  %>% filter(padj < 0.05)
+  %>% filter(baseMean > 10)
+  %>% arrange(baseMean, decreasing = TRUE))
+head(sigtab_bac_filt)
+write.csv(sigtab_bac_filt, "deseq_sig_bacload_baseMean >10.csv")
+
+#plot
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+  scale_fill_brewer(palette = palname, ...)
+}
+
+#Order order because Corynebacteriales does not go down to Family/Genus
+x = tapply(sigtab_bac_filt$log2FoldChange, sigtab_bac_filt$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_bac_filt$Order = factor(as.character(sigtab_bac_filt$Order), levels=names(x))
+
+#Genus order
+x = tapply(sigtab_bac_filt$log2FoldChange, sigtab_bac_filt$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab_bac_filt$Genus = factor(as.character(sigtab_bac_filt$Genus), levels=names(x))
+
+bac_plot <- ggplot(sigtab_bac_filt, aes(x = Genus, y = log2FoldChange)) + geom_point(size = 1.5, alpha = 0.75) +               theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + ggtitle("Differentially abundant ASVs associated with bacterial load in the mid turbinates (Genus)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+bac_plot
+svg('FIGURES/diffabund_bacload_10prev.svg', width = 10)
+bac_plot
+dev.off()
+
+order_bacplot <- ggplot(sigtab_bac_filt, aes(x = Order, y = log2FoldChange)) + geom_point(size = 1.5, alpha = 0.8) +                theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + ggtitle("Differentially abundant ASVs associated with bacterial load in the mid turbinates (Order)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+order_bacplot
+svg('FIGURES/diffabund_bacload_10prev.svg', width = 10)
+order_bacplot
+dev.off()
+
+#psmelt object into dataframe
+ps <- psmelt(dat_nas_base)
+write.csv(ps, "ps_melted_baseline_nasal_samples.csv")
+
+head(ps)
+table(ps$OTU)
+```
+
+## Within and between beta-diversity per cluster
+```{r}
+#Use supplemental Python code to calculate sample pairwise distances and output into CSV
+dists = read.csv(file="8clusters_bray_curtis_distances.csv", quote="")
+dists$clust1vsclust2 <- factor(dists$clust1vsclust2, levels = c("1vs1","1vs2","1vs3","1vs4","1vs5","1vs6","1vs7", "2vs2","2vs3","2vs4","2vs5","2vs6", "2vs7","3vs3","3vs4","3vs5","3vs6","3vs7", "4vs4", "4vs5","4vs6","4vs7", "5vs5","5vs6","5vs7", "6vs6","6vs7", "7vs7"))
+                         
+# colour pattern                              
+# "1" = "#ff7518",#coryne2
+# "2" = "#9c70db", #staph2
+# "3" = "#005d9d", #mixed
+# "4" = "#cc7000", #coryne3
+# "5" = "#800080", #dark purple; staph 1
+# "6" = "#f99552", #coryne1
+# "7" = "#db7461",  #coryne 4
+                        
+#Define colour array by hand
+colour.array <- c("1vs1" = "#ff7518",
+                  "1vs2" = "gray",
+                  "1vs3" = "gray",
+                  "1vs4" = "gray",
+                  "1vs5" = "gray",
+                  "1vs6" = "gray",
+                  "1vs7" = "gray",
+                  "2vs2" = "#9c70db",
+                  "2vs3" = "gray",
+                  "2vs4" = "gray",
+                  "2vs5" = "gray",
+                  "2vs6" = "gray",
+                  "2vs7" = "gray",
+                  "3vs3" = "#005d9d",
+                  "3vs4" = "gray",
+                  "3vs5" = "gray",
+                  "3vs6" = "gray",
+                  "3vs7" = "gray",
+                  "4vs4" = "#cc7000",
+                  "4vs5" = "gray",
+                  "4vs6" = "gray",
+                  "4vs7" = "gray",
+                  "5vs5" = "#800080",
+                  "5vs6" = "gray",
+                  "5vs7" = "gray",
+                  "6vs6" = "#f99552",
+                  "6vs7" = "gray",
+                  "7vs7" = "#db7461")
+#Plot
+p.wnbtw <- ggplot(data=dists, aes(x=clust1vsclust2, y=dist, colour=clust1vsclust2)) +
+  geom_boxplot() +
+  scale_colour_manual(values=colour.array) +
+  xlab("Pairwise comparison of clusters") + ylab("Bray curtis distance metric") +
+  theme(legend.position="none",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ggtitle("7 optimal clusters for Fall nasal samples")
+p.wnbtw
+svg("FIGS/bray_curtis_boxplots_7clusters_june28th.svg", width = 10)
+p.wnbtw
+dev.off()
+```
+
+## Within and between beta-diversity per cluster - genus level
+```{r}
+#Use supplemental Python code to calculate sample pairwise distances and output into CSV
+dists = read.csv(file="bray_curtis_distance_byclust7_followup.csv", quote="")
+dists$clust1vsclust2 <- factor(dists$clust1vsclust2, levels = c("1vs1","1vs2","1vs3","1vs4","1vs5","1vs6","1vs7", "2vs2","2vs3","2vs4","2vs5","2vs6", "2vs7","3vs3","3vs4","3vs5","3vs6","3vs7", "4vs4", "4vs5","4vs6","4vs7","5vs5","5vs6","5vs7","6vs6","6vs7", "7vs7"))
+                               
+#"#9c70db","2" = "#ff7b00", "3" = "#800080", "4" = "#cc7000", 
+                        #"5" = "#005d9d", "6" = "#e6c900",
+                        #"7" = "#ffa162", "8" = "#e1275f"                              
+
+#Define colour array by hand
+colour.array <- c("1vs1" = "#9c70db",
+                  "1vs2" = "gray",
+                  "1vs3" = "gray",
+                  "1vs4" = "gray",
+                  "1vs5" = "gray",
+                  "1vs6" = "gray",
+                  "1vs7" = "gray",
+                  "1vs8" = "gray",
+                  "1vs9" = "gray",
+                  "1vs10" = "gray",
+                  "2vs2" = "#db7461",
+                  "2vs3" = "gray",
+                  "2vs4" = "gray",
+                  "2vs5" = "gray",
+                  "2vs6" = "gray",
+                  "2vs7" = "gray",
+                  "2vs8" = "gray",
+                  "2vs9" = "gray",
+                  "2vs10" = "gray",
+                  "3vs3" = "#800080",
+                  "3vs4" = "gray",
+                  "3vs5" = "gray",
+                  "3vs6" = "gray",
+                  "3vs7" = "gray",
+                  "3vs8" = "gray",
+                  "3vs9" = "gray",
+                  "3vs10" = "gray",
+                  "4vs4" = "#cc7000",
+                  "4vs5" = "gray",
+                  "4vs6" = "gray",
+                  "4vs7" = "gray",
+                  "4vs8" = "gray",
+                  "4vs9" = "gray",
+                  "4vs10" = "gray",
+                  "5vs5" = "#ffd27f",
+                  "5vs6" = "gray",
+                  "5vs7" = "gray",
+                  "5vs8" = "gray",
+                  "5vs9" = "gray",
+                  "5vs10" = "gray",
+                  "6vs6" = "#ff7b00",
+                  "6vs7" = "gray",
+                  "6vs8" = "gray",
+                  "6vs9" = "gray",
+                  "6vs10" = "gray",
+                  "7vs7" = "#005d9d",
+                  "7vs8" = "gray",
+                  "7vs9" = "gray",
+                  "7vs10" = "gray",
+                  "8vs8" = "#f44336",
+                  "8vs9" = "gray",
+                  "8vs10" = "gray",
+                  "9vs9" = "#ffa162",
+                  "9vs10" = "gray",
+                  "10vs10" = "#4eaf24")
+#Plot
+p.wnbtw <- ggplot(data=dists, aes(x=clust1vsclust2, y=dist, colour=clust1vsclust2)) +
+  geom_boxplot() +
+  scale_colour_manual(values=colour.array) +
+  xlab("Pairwise comparison of clusters") + ylab("Bray curtis distance metric") +
+  theme(legend.position="none",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ggtitle("Fall 2020 - Fall 2021 10 clusters for nasal samples")
+p.wnbtw
+svg("10clusts_braycurtis_plot.svg", width = 12)
+p.wnbtw
+dev.off()
+```
